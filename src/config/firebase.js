@@ -4,7 +4,7 @@ import { getFirestore } from 'firebase/firestore';
 import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  apiKey: "AIzaSyA39002uqowAS55OqNkg5sUAy0rQ2v_d8g",
   authDomain: "coding-website-44c1f.firebaseapp.com",
   projectId: "coding-website-44c1f",
   storageBucket: "coding-website-44c1f.firebasestorage.app",
