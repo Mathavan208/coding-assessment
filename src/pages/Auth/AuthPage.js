@@ -6,7 +6,7 @@ import toast from 'react-hot-toast';
 import gsap from 'gsap';
 
 const AuthPage = () => {
-  const { login, register } = useAuth();
+  const { login, register, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   
@@ -19,7 +19,17 @@ const AuthPage = () => {
   });
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
+  // Update isRegister when location changes
+  useEffect(() => {
+    const newIsRegister = location.pathname === '/register';
+    setIsRegister(newIsRegister);
+    // Reset form when switching between login/register
+    setFormData({ email: '', password: '', name: '', confirmPassword: '' });
+  }, [location.pathname]);
+
+  // GSAP animations
   useEffect(() => {
     gsap.fromTo('.auth-container', 
       { opacity: 0, y: 50 }, 
@@ -33,10 +43,6 @@ const AuthPage = () => {
       { opacity: 1, x: 0, duration: 0.5, ease: 'power2.out' }
     );
   }, [isRegister]);
-
-  useEffect(() => {
-    setIsRegister(location.pathname === '/register');
-  }, [location.pathname]);
 
   const handleInputChange = (e) => {
     setFormData({
@@ -75,22 +81,21 @@ const AuthPage = () => {
     setLoading(true);
     
     try {
-      let success = false;
-      
       if (isRegister) {
-        success = await register(formData.email, formData.password, formData.name);
+        const success = await register(formData.email, formData.password, formData.name);
         if (success) {
+          toast.success('Account created successfully! Please login.');
           navigate('/login');
-          setFormData({ email: formData.email, password: '', name: '', confirmPassword: '' });
         }
       } else {
-        success = await login(formData.email, formData.password);
+        const success = await login(formData.email, formData.password);
         if (success) {
           navigate('/dashboard');
         }
       }
     } catch (error) {
       console.error('Form submission error:', error);
+      toast.error('An unexpected error occurred');
     } finally {
       setLoading(false);
     }
@@ -99,7 +104,6 @@ const AuthPage = () => {
   const toggleForm = () => {
     const newPath = isRegister ? '/login' : '/register';
     navigate(newPath);
-    setFormData({ email: '', password: '', name: '', confirmPassword: '' });
   };
 
   return (
@@ -133,7 +137,7 @@ const AuthPage = () => {
                   onChange={handleInputChange}
                   className="w-full px-4 py-3 transition-all border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   placeholder="Enter your full name"
-                  disabled={loading}
+                  disabled={loading || authLoading}
                   required
                 />
               </div>
@@ -152,7 +156,7 @@ const AuthPage = () => {
                 onChange={handleInputChange}
                 className="w-full px-4 py-3 transition-all border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 placeholder="Enter your email"
-                disabled={loading}
+                disabled={loading || authLoading}
                 required
               />
             </div>
@@ -171,7 +175,7 @@ const AuthPage = () => {
                   onChange={handleInputChange}
                   className="w-full px-4 py-3 pr-12 transition-all border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   placeholder="Enter your password"
-                  disabled={loading}
+                  disabled={loading || authLoading}
                   required
                   minLength={6}
                 />
@@ -192,23 +196,32 @@ const AuthPage = () => {
                   <Lock className="w-4 h-4 mr-2" />
                   Confirm Password
                 </label>
-                <input
-                  type="password"
-                  name="confirmPassword"
-                  value={formData.confirmPassword}
-                  onChange={handleInputChange}
-                  className="w-full px-4 py-3 transition-all border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Confirm your password"
-                  disabled={loading}
-                  required
-                />
+                <div className="relative">
+                  <input
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    name="confirmPassword"
+                    value={formData.confirmPassword}
+                    onChange={handleInputChange}
+                    className="w-full px-4 py-3 pr-12 transition-all border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Confirm your password"
+                    disabled={loading || authLoading}
+                    required
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute text-gray-500 transform -translate-y-1/2 right-3 top-1/2 hover:text-gray-700"
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  </button>
+                </div>
               </div>
             )}
 
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || authLoading}
               className="flex items-center justify-center w-full px-4 py-3 font-medium text-white transition-all rounded-lg bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading ? (
@@ -230,8 +243,8 @@ const AuthPage = () => {
               <button
                 type="button"
                 onClick={toggleForm}
-                disabled={loading}
-                className="font-medium text-blue-600 underline transition-colors hover:text-blue-700"
+                disabled={loading || authLoading}
+                className="font-medium text-blue-600 underline transition-colors hover:text-blue-700 disabled:opacity-50"
               >
                 {isRegister ? 'Sign In' : 'Create Account'}
               </button>
