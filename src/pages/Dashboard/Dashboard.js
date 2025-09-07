@@ -1,27 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { 
-  collection, 
-  getDocs, 
-  query, 
-  where, 
-  doc, 
-  getDoc,
-  updateDoc
+import {
+  collection,
+  getDocs,
+  query,
+  where,
+  doc,
+  getDoc
 } from 'firebase/firestore';
 import { db } from '../../config/firebase';
-import { 
-  Clock, 
-  FileText, 
-  Trophy, 
+import {
+  Clock,
+  FileText,
+  Trophy,
   CheckCircle,
   Play,
   Calendar,
   Star,
-  Target,
-  TrendingUp,
-  RefreshCw
+  RefreshCw,
+  TrendingUp
 } from 'lucide-react';
 import LoadingSpinner from '../../components/UI/LoadingSpinner';
 import toast from 'react-hot-toast';
@@ -30,7 +28,7 @@ import gsap from 'gsap';
 const Dashboard = () => {
   const { user, userProfile, logout } = useAuth();
   const navigate = useNavigate();
-  
+
   const [assessments, setAssessments] = useState([]);
   const [submissions, setSubmissions] = useState([]);
   const [userStats, setUserStats] = useState({
@@ -48,181 +46,117 @@ const Dashboard = () => {
   }, [user, userProfile]);
 
   useEffect(() => {
-    // GSAP animations
-    gsap.fromTo('.dashboard-header', 
-      { opacity: 0, y: -30 }, 
+    gsap.fromTo('.dashboard-header',
+      { opacity: 0, y: -30 },
       { opacity: 1, y: 0, duration: 0.8, ease: 'power2.out' }
     );
-    
-    gsap.fromTo('.stats-card', 
-      { opacity: 0, y: 20 }, 
+    gsap.fromTo('.stats-card',
+      { opacity: 0, y: 20 },
       { opacity: 1, y: 0, duration: 0.6, stagger: 0.1, delay: 0.3 }
     );
-    
-    gsap.fromTo('.assessment-card', 
-      { opacity: 0, scale: 0.95 }, 
+    gsap.fromTo('.assessment-card',
+      { opacity: 0, scale: 0.95 },
       { opacity: 1, scale: 1, duration: 0.5, stagger: 0.1, delay: 0.6 }
     );
   }, [assessments]);
-
-  const updateUserCompletedAssessments = async (assessmentId, bestScore) => {
-    try {
-      const userRef = doc(db, 'users', user.uid);
-      const userDoc = await getDoc(userRef);
-      const userData = userDoc.exists() ? userDoc.data() : {};
-      
-      const completedAssessments = userData.assessmentsCompleted || [];
-      const assessmentScores = userData.assessmentScores || {};
-      
-      if (!completedAssessments.includes(assessmentId)) {
-        await updateDoc(userRef, {
-          assessmentsCompleted: [...completedAssessments, assessmentId],
-          [`assessmentScores.${assessmentId}`]: bestScore,
-          updatedAt: new Date()
-        });
-        
-        return true;
-      }
-      
-      return false;
-    } catch (error) {
-      return false;
-    }
-  };
 
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
 
-      // Fetch assessments
+      // Fetch all assessments
       const assessmentsSnapshot = await getDocs(collection(db, 'assessments'));
-      const assessmentsData = assessmentsSnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      }));
+      const assessmentsData = assessmentsSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
 
-      // Fetch user data to get completed assessments
+      // Fetch user document (source of truth for completion)
       const userDoc = await getDoc(doc(db, 'users', user.uid));
       const userData = userDoc.exists() ? userDoc.data() : {};
-      let completedAssessments = userData.assessmentsCompleted || [];
-      const assessmentScores = userData.assessmentScores || {};
+      // Map shape: { [assessmentId]: { score, avgExecMs, completedAt } }
+      const completedMap = userData.assessmentsCompleted || {};
 
-      // Fetch submissions
+      // Fetch submissions for this user (only relevant for incomplete assessments now)
       let submissionsData = [];
-      
       try {
         const submissionsQuery = query(
           collection(db, 'submissions'),
           where('userId', '==', user.uid)
         );
-        
-        const submissionsSnapshot = await getDocs(submissionsQuery);
-        
-        submissionsSnapshot.forEach((doc) => {
-          const data = doc.data();
-          
-          // Safe date parsing
+        const submissionsSnap = await getDocs(submissionsQuery);
+        submissionsData = submissionsSnap.docs.map(d => {
+          const data = d.data();
           let submittedAtDate = null;
           if (data.submittedAt) {
-            if (typeof data.submittedAt.toDate === 'function') {
-              submittedAtDate = data.submittedAt.toDate();
-            } else if (typeof data.submittedAt === 'string') {
-              submittedAtDate = new Date(data.submittedAt);
-            } else if (data.submittedAt instanceof Date) {
-              submittedAtDate = data.submittedAt;
-            }
+            if (typeof data.submittedAt.toDate === 'function') submittedAtDate = data.submittedAt.toDate();
+            else if (typeof data.submittedAt === 'string') submittedAtDate = new Date(data.submittedAt);
+            else if (data.submittedAt instanceof Date) submittedAtDate = data.submittedAt;
           }
-          
-          submissionsData.push({
-            id: doc.id,
-            ...data,
-            submittedAt: submittedAtDate
-          });
-        });
-
-        // Sort on client side
-        submissionsData.sort((a, b) => {
+          return { id: d.id, ...data, submittedAt: submittedAtDate };
+        }).sort((a, b) => {
           if (!a.submittedAt && !b.submittedAt) return 0;
           if (!a.submittedAt) return 1;
           if (!b.submittedAt) return -1;
           return new Date(b.submittedAt) - new Date(a.submittedAt);
         });
-        
-      } catch (submissionsError) {
+      } catch {
         toast.error('Failed to load submission history');
       }
 
-      // Process assessments with completion logic based on chances
-      const assessmentsWithCompletion = [];
-      let needsUserUpdate = false;
+      // Build assessment cards using completedMap
+      const cards = assessmentsData.map(a => {
+        const entry = completedMap[a.id]; // { score, avgExecMs, completedAt } | undefined
+        const isCompleted = !!entry && typeof entry.score === 'number';
 
-      for (const assessment of assessmentsData) {
-        // Get submissions for this assessment
-        const assessmentSubmissions = submissionsData.filter(sub => sub.assessmentId === assessment.id);
-        const submissionCount = assessmentSubmissions.length;
-        const chances = assessment.chances || 1;
+        // Only show attempts info for incomplete ones
+        const aSubs = isCompleted ? [] : submissionsData.filter(s => s.assessmentId === a.id);
+        const chances = a.chances || 1;
+        const submissionCount = aSubs.length;
+        const chancesRemaining = Math.max(0, chances - submissionCount);
+        const canRetake = !isCompleted && submissionCount > 0;
+        const latestSubmission = aSubs.length > 0 ? aSubs : null;
 
-        // Calculate best score from all submissions
-        const bestScore = assessmentSubmissions.length > 0 
-          ? Math.max(...assessmentSubmissions.map(sub => sub.score || 0))
-          : 0;
-
-        // Check if assessment should be completed based on chances
-        const shouldBeCompleted = submissionCount >= chances;
-        const isMarkedCompleted = completedAssessments.includes(assessment.id);
-
-        // If assessment should be completed but not marked as completed, update user document
-        if (shouldBeCompleted && !isMarkedCompleted && submissionCount > 0) {
-          const updateSuccess = await updateUserCompletedAssessments(assessment.id, bestScore);
-          if (updateSuccess) {
-            completedAssessments.push(assessment.id);
-            needsUserUpdate = true;
-          }
-        }
-
-        // Get the latest submission for this assessment
-        const latestSubmission = assessmentSubmissions.length > 0 ? assessmentSubmissions[0] : null;
-
-        assessmentsWithCompletion.push({
-          ...assessment,
-          isCompleted: shouldBeCompleted,
-          submissionCount,
+        return {
+          ...a,
+          isCompleted,
+          userScore: isCompleted ? entry.score : (aSubs.length ? Math.max(...aSubs.map(s => s.score || 0)) : 0),
+          avgExecMs: isCompleted ? (entry.avgExecMs || 0) : undefined,
+          completedAt: isCompleted ? (entry.completedAt ? (typeof entry.completedAt.toDate === 'function' ? entry.completedAt.toDate() : new Date(entry.completedAt)) : null) : null,
           chancesUsed: submissionCount,
-          chancesRemaining: Math.max(0, chances - submissionCount),
-          userScore: bestScore,
+          chancesRemaining,
           submissionDate: latestSubmission?.submittedAt || null,
           submissionId: latestSubmission?.id || null,
-          canRetake: !shouldBeCompleted && submissionCount > 0,
-          allSubmissions: assessmentSubmissions
-        });
-      }
-
-      // Sort assessments: incomplete first, then by creation date
-      const sortedAssessments = assessmentsWithCompletion.sort((a, b) => {
-        if (a.isCompleted && !b.isCompleted) return 1;
-        if (!a.isCompleted && b.isCompleted) return -1;
-        return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
+          canRetake,
+          allSubmissions: aSubs
+        };
       });
 
-      setAssessments(sortedAssessments);
-      setSubmissions(submissionsData);
-      
-      // Calculate stats
-      const completedCount = sortedAssessments.filter(a => a.isCompleted).length;
-      const totalScore = sortedAssessments
-        .filter(a => a.isCompleted && a.userScore > 0)
-        .reduce((sum, a) => sum + a.userScore, 0);
-      const averageScore = completedCount > 0 ? Math.round(totalScore / completedCount) : 0;
-      const totalTimeSpent = submissionsData.reduce((sum, sub) => sum + (sub.timeSpent || 0), 0);
+      // Sort: incomplete first, then by creation date
+      const sorted = cards.sort((x, y) => {
+        if (x.isCompleted && !y.isCompleted) return 1;
+        if (!x.isCompleted && y.isCompleted) return -1;
+        return new Date(y.createdAt || 0) - new Date(x.createdAt || 0);
+      });
+
+      setAssessments(sorted);
+
+      // Recent submissions: only for incomplete assessments
+      const incompleteIds = new Set(sorted.filter(a => !a.isCompleted).map(a => a.id));
+      setSubmissions(submissionsData.filter(s => incompleteIds.has(s.assessmentId)));
+
+      // Stats
+      const completedEntries = Object.entries(completedMap); // [[assessmentId, {score, avgExecMs, completedAt}], ...]
+      const completedCount = completedEntries.length;
+      const avgScore = completedCount > 0
+        ? Math.round(completedEntries.reduce((sum, [, v]) => sum + (Number(v?.score) || 0), 0) / completedCount)
+        : 0;
+      const totalTimeSpent = submissionsData.reduce((sum, s) => sum + (s.timeSpent || 0), 0);
 
       setUserStats({
         totalAssessments: assessmentsData.length,
         completedAssessments: completedCount,
-        averageScore,
+        averageScore: avgScore,
         totalTimeSpent: Math.round(totalTimeSpent / 60)
       });
-
-    } catch (error) {
+    } catch {
       toast.error('Failed to load dashboard data');
     } finally {
       setLoading(false);
@@ -240,8 +174,8 @@ const Dashboard = () => {
   const formatTime = (minutes) => {
     if (minutes < 60) return `${minutes} min`;
     const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-    return `${hours}h ${remainingMinutes}m`;
+    const remaining = minutes % 60;
+    return `${hours}h ${remaining}m`;
   };
 
   const getScoreColor = (score) => {
@@ -365,11 +299,11 @@ const Dashboard = () => {
                 <div
                   key={assessment.id}
                   className={`bg-white rounded-xl shadow-sm hover:shadow-lg transition-all duration-300 cursor-pointer border-l-4 assessment-card ${
-                    assessment.isCompleted 
-                      ? 'border-green-500 bg-gradient-to-r from-green-50 to-white' 
+                    assessment.isCompleted
+                      ? 'border-green-500 bg-gradient-to-r from-green-50 to-white'
                       : assessment.canRetake
-                        ? 'border-orange-500 bg-gradient-to-r from-orange-50 to-white'
-                        : 'border-blue-500 hover:border-blue-600'
+                      ? 'border-orange-500 bg-gradient-to-r from-orange-50 to-white'
+                      : 'border-blue-500 hover:border-blue-600'
                   }`}
                   onClick={() => !assessment.isCompleted && handleStartAssessment(assessment.id)}
                 >
@@ -397,7 +331,7 @@ const Dashboard = () => {
                       {assessment.description}
                     </p>
 
-                    {/* Assessment metadata */}
+                    {/* Metadata */}
                     <div className="flex items-center justify-between mb-4 text-sm text-gray-500">
                       <div className="flex items-center space-x-4">
                         <span className="flex items-center">
@@ -409,62 +343,59 @@ const Dashboard = () => {
                           {assessment.questions?.length || 0} questions
                         </span>
                       </div>
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        assessment.difficulty === 'easy' ? 'bg-green-100 text-green-800' :
-                        assessment.difficulty === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                        'bg-red-100 text-red-800'
-                      }`}>
+                      <span
+                        className={`px-2 py-1 rounded-full text-xs font-medium ${
+                          assessment.difficulty === 'easy'
+                            ? 'bg-green-100 text-green-800'
+                            : assessment.difficulty === 'medium'
+                            ? 'bg-yellow-100 text-yellow-800'
+                            : 'bg-red-100 text-red-800'
+                        }`}
+                      >
                         {assessment.difficulty}
                       </span>
                     </div>
 
-                    {/* Chances/Attempts info */}
-                    <div className="p-3 mb-4 rounded-lg bg-gray-50">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-gray-600">Attempts:</span>
-                        <span className={`font-medium ${
-                          assessment.chancesRemaining === 0 ? 'text-red-600' : 'text-blue-600'
-                        }`}>
-                          {assessment.chancesUsed}/{assessment.chances || 1}
-                        </span>
-                      </div>
-                      {assessment.chancesRemaining > 0 && !assessment.isCompleted && (
-                        <div className="mt-1 text-xs text-gray-500">
-                          {assessment.chancesRemaining} attempt{assessment.chancesRemaining !== 1 ? 's' : ''} remaining
+                    {/* Attempts (only when not completed) */}
+                    {!assessment.isCompleted && (
+                      <div className="p-3 mb-4 rounded-lg bg-gray-50">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-gray-600">Attempts:</span>
+                          <span
+                            className={`font-medium ${
+                              assessment.chancesRemaining === 0 ? 'text-red-600' : 'text-blue-600'
+                            }`}
+                          >
+                            {assessment.chancesUsed}/{assessment.chances || 1}
+                          </span>
                         </div>
-                      )}
-                    </div>
+                        {assessment.chancesRemaining > 0 && (
+                          <div className="mt-1 text-xs text-gray-500">
+                            {assessment.chancesRemaining} attempt{assessment.chancesRemaining !== 1 ? 's' : ''} remaining
+                          </div>
+                        )}
+                      </div>
+                    )}
 
-                    {/* Completion info or start button */}
+                    {/* Completed details */}
                     {assessment.isCompleted ? (
                       <div className="space-y-3">
-                        {/* Score display */}
                         <div className="p-3 bg-green-100 rounded-lg">
                           <div className="flex items-center justify-between">
-                            <span className="text-sm font-medium text-green-800">
-                              Best Score
-                            </span>
+                            <span className="text-sm font-medium text-green-800">Final Score</span>
                             <span className={`text-lg font-bold ${getScoreColor(assessment.userScore)}`}>
                               {assessment.userScore}%
                             </span>
                           </div>
-                          {assessment.submissionDate && (
-                            <div className="flex items-center justify-between mt-2 text-xs text-green-700">
-                              <span className="flex items-center">
-                                <Calendar className="w-3 h-3 mr-1" />
-                                {assessment.submissionDate.toLocaleDateString()}
-                              </span>
-                              {assessment.userScore >= 80 && (
-                                <span className="flex items-center">
-                                  <Star className="w-3 h-3 mr-1" />
-                                  Excellent!
-                                </span>
-                              )}
+                          <div className="grid grid-cols-2 gap-2 mt-2 text-xs text-green-800">
+                            <div>Avg exec time: <strong>{assessment.avgExecMs ?? 0} ms</strong></div>
+                            <div className="flex items-center justify-end">
+                              <Calendar className="w-3 h-3 mr-1" />
+                              {assessment.completedAt ? assessment.completedAt.toLocaleDateString() : '—'}
                             </div>
-                          )}
+                          </div>
                         </div>
 
-                        {/* View results button */}
                         <button
                           className="flex items-center justify-center w-full px-4 py-2 text-sm font-medium text-gray-700 transition-colors bg-gray-100 rounded-lg hover:bg-gray-200"
                           onClick={(e) => {
@@ -479,9 +410,7 @@ const Dashboard = () => {
                     ) : (
                       <button
                         className={`flex items-center justify-center w-full px-4 py-3 font-medium text-white transition-colors rounded-lg ${
-                          assessment.canRetake 
-                            ? 'bg-orange-600 hover:bg-orange-700' 
-                            : 'bg-blue-600 hover:bg-blue-700'
+                          assessment.canRetake ? 'bg-orange-600 hover:bg-orange-700' : 'bg-blue-600 hover:bg-blue-700'
                         }`}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -508,7 +437,7 @@ const Dashboard = () => {
           )}
         </div>
 
-        {/* Recent Submissions */}
+        {/* Recent Submissions (only for incomplete assessments) */}
         {submissions.length > 0 && (
           <div className="p-6 bg-white shadow-sm rounded-xl">
             <h3 className="mb-4 text-xl font-bold text-gray-900">Recent Submissions</h3>
@@ -521,13 +450,6 @@ const Dashboard = () => {
                       <h4 className="font-medium text-gray-900">{assessment?.title || 'Unknown Assessment'}</h4>
                       <p className="text-sm text-gray-500">
                         {submission.submittedAt ? submission.submittedAt.toLocaleDateString() : 'Unknown date'}
-                        {assessment && (
-                          <span className="ml-2">
-                            • Attempt {assessment.allSubmissions ? 
-                              assessment.allSubmissions.findIndex(sub => sub.id === submission.id) + 1 : 
-                              1}/{assessment.chances || 1}
-                          </span>
-                        )}
                       </p>
                     </div>
                     <div className="flex items-center space-x-3">
