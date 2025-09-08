@@ -3,7 +3,7 @@ import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import gsap from 'gsap';
-
+import SebConfigPage from './components/SebConfigPage';
 // Components
 import Navbar from './components/Layout/Navbar';
 import LoadingSpinner from './components/UI/LoadingSpinner';
@@ -48,6 +48,8 @@ const AppContent = () => {
               <AdminDashboard />
             </ProtectedRoute>
           } />
+                  <Route path="/seb-config" element={<SebConfigPage />} />
+
           <Route path="/assessment/:id" element={
             <ProtectedRoute>
               <Assessment />

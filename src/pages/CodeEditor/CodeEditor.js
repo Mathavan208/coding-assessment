@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import {
   doc,
@@ -29,7 +29,9 @@ import {
   EyeOff,
   RefreshCw,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import MonacoEditor from '../../components/CodeEditor/MonacoEditor';
 import LoadingSpinner from '../../components/UI/LoadingSpinner';
@@ -152,7 +154,6 @@ const JsonTable = ({ data }) => {
 class CodeExecutionEngine {
   static PISTON_API_URL = 'https://emkc.org/api/v2/piston/execute';
   static TIMEOUT = 20000;
-
   static async executePython(code, testCases) {
     const results = [];
     for (let i = 0; i < testCases.length; i++) {
@@ -204,7 +205,6 @@ class CodeExecutionEngine {
     }
     return results;
   }
-
   static async executeJava(code, testCases) {
     const results = [];
     for (let i = 0; i < testCases.length; i++) {
@@ -261,14 +261,12 @@ class CodeExecutionEngine {
     }
     return results;
   }
-
   static normalizeSQLForAlaSQL(sql) {
     if (!sql || typeof sql !== 'string') return sql || '';
     let out = sql.replace(/\bINTEGER\s+PRIMARY\s+KEY\b/gi, 'INT AUTOINCREMENT PRIMARY KEY');
     out = out.replace(/\bINT\s+PRIMARY\s+KEY\b/gi, 'INT AUTOINCREMENT PRIMARY KEY');
     return out;
   }
-
   static async executeSQL(sqlQuery, testCases) {
     const results = [];
     try {
@@ -325,7 +323,6 @@ class CodeExecutionEngine {
     }
     return results;
   }
-
   static async executeCode(code, language, testCases) {
     let results = [];
     switch (language.toLowerCase()) {
@@ -347,9 +344,9 @@ class CodeExecutionEngine {
   }
 }
 
+
 const TestCaseOutput = ({ testCase, index, language }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-
   const parseJsonMaybe = (s) => {
     if (!s) return null;
     if (typeof s === 'object') return s;
@@ -358,7 +355,6 @@ const TestCaseOutput = ({ testCase, index, language }) => {
     }
     return s;
   };
-
   const renderOutput = (output) => {
     if (!output && output !== 0 && output !== '') {
       return <div className="text-sm text-gray-400">No output</div>;
@@ -375,9 +371,7 @@ const TestCaseOutput = ({ testCase, index, language }) => {
       </pre>
     );
   };
-
   const isPassed = !!testCase.passed;
-
   return (
     <div className={`border rounded-lg mb-3 ${isPassed ? 'border-green-600' : 'border-red-600'}`}>
       <div
@@ -397,7 +391,6 @@ const TestCaseOutput = ({ testCase, index, language }) => {
         </div>
         {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
       </div>
-
       {isExpanded && (
         <div className="p-4 space-y-4 border-t border-gray-600">
           {testCase.input && (
@@ -470,13 +463,17 @@ const TestResultsDisplay = ({ testResults, language }) => {
   );
 };
 
+
 const CodeEditor = () => {
   const { assessmentId, questionId } = useParams();
   const { user } = useAuth();
   const navigate = useNavigate();
-
   useSupressResizeObserverErrors();
-
+  
+  // Security flags for SEB
+  const [isSEB, setIsSEB] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  
   const [assessment, setAssessment] = useState(null);
   const [questions, setQuestions] = useState([]);
   const [currentQuestion, setCurrentQuestion] = useState(null);
@@ -488,34 +485,275 @@ const CodeEditor = () => {
   const [testResults, setTestResults] = useState(null);
   const [timeRemaining, setTimeRemaining] = useState(null);
   const [sessionStartTime, setSessionStartTime] = useState(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [submissions, setSubmissions] = useState({});
   const [isFromCache, setIsFromCache] = useState(false);
-
   const [showReview, setShowReview] = useState(false);
   const [assessmentReview, setAssessmentReview] = useState(null);
-  const reviewRef = useRef(null);
+    // Voice/TTS
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const voicesRef = useRef([]);
+  const [synthReady, setSynthReady] = useState(false);
 
+  // Backend URL for Gemini helper
+  const GEMINI_CHAT_URL = 'https://pocketmentor-backend.onrender.com/api/gemini/chat';
+
+  const reviewRef = useRef(null);
   const timerRef = useRef(null);
   const cacheKeyRef = useRef(null);
   const lastSaveRef = useRef(Date.now());
+  const speak = useCallback((text) => {
+  try {
+    if (!voiceEnabled) return;
+    const synth = window.speechSynthesis;
+    if (!synth || !text) return;
+    const msg = String(text).replace(/\s+/g, ' ').trim();
+    synth.cancel();
+    const utter = new SpeechSynthesisUtterance(msg.slice(0, 600));
+    utter.lang = 'en-US';
+    utter.rate = 1.0;
+    utter.pitch = 1.0;
+    const preferred =
+      voicesRef.current.find(v => /en(-|_)?(US|IN|GB)/i.test(v.lang)) ||
+      voicesRef.current;
+    if (preferred) utter.voice = preferred;
+    synth.speak(utter);
+  } catch {}
+}, [voiceEnabled]);
+const requestSyntaxHelp = useCallback(async (language, codeStr, errorText) => {
+  const prompt =
+`Act as a concise syntax-only debugger.
+Language: ${language}
+Task: Identify the exact syntax error location (line/column if possible) and provide a minimal corrected snippet with a one-line explanation. Limit to 3 short sentences under 300 characters.
+Code:
+${codeStr}
 
-  const handleCopy = useCallback((e) => { e.preventDefault(); toast.error('Copy operation is disabled during assessment'); return false; }, []);
-  const handlePaste = useCallback((e) => { e.preventDefault(); toast.error('Paste operation is disabled during assessment'); return false; }, []);
-  const handleCut = useCallback((e) => { e.preventDefault(); toast.error('Cut operation is disabled during assessment'); return false; }, []);
+Error:
+${errorText}
 
+Output format:
+- Issue:
+- Location:
+- Fix:
+`;
+  try {
+    const res = await axios.post(
+      GEMINI_CHAT_URL,
+      { prompt },
+      { timeout: 20000, headers: { 'Content-Type': 'application/json' } }
+    );
+    const data = res.data || {};
+    let text = '';
+    if (Array.isArray(data.candidates) && data.candidates.length) {
+      const parts = data.candidates?.content?.parts || [];
+      text = parts.map(p => p?.text || '').join('').trim();
+    }
+    if (!text && typeof data.text === 'string') text = data.text;
+    if (!text && typeof data.output_text === 'string') text = data.output_text;
+    if (!text) text = JSON.stringify(data);
+    return text.slice(0, 600);
+  } catch (e) {
+    return `Syntax issue detected, but helper failed: ${e.message}`;
+  }
+}, []);
+
+
+const analyzeAndSpeak = useCallback(async (execResult) => {
+  try {
+    if (!execResult || !Array.isArray(execResult.testCases)) return;
+    const tcs = execResult.testCases;
+    const firstErr = tcs.find(tc => tc && tc.error)?.error || '';
+
+      // Detect compile/syntax (Python/Java) or SQL parse
+      const isSyntax =
+        /Compilation Error|SyntaxError|IndentationError|ParseError/i.test(firstErr);
+      const isSqlParse = /SQL Error:/i.test(firstErr) && /parse|syntax/i.test(firstErr);
+
+      if (isSyntax || isSqlParse) {
+        const text = await requestSyntaxHelp(
+          (currentQuestion?.language || '').toUpperCase(),
+          code,
+          firstErr
+        );
+        speak(text);
+        return;
+      }
+
+      // Runtime error (non-syntax)
+      if (/Runtime Error:/i.test(firstErr)) {
+        speak('Runtime error occurred while executing the code. Please check logic or inputs.');
+        return;
+      }
+
+      // Test outcomes
+      const total = execResult.totalTests || tcs.length || 0;
+      const passed = execResult.passedTests || tcs.filter(x => x?.passed).length || 0;
+      if (total > 0 && passed === total) {
+        speak(`All ${total} test cases passed successfully.`);
+        return;
+      }
+      if (total > 0 && passed < total) {
+        const failedIdxs = tcs.map((t, i) => ({ t, i })).filter(x => !x.t?.passed).map(x => x.i+1);
+        if (failedIdxs.length === 1) {
+          const idx = failedIdxs[0] - 1;
+          const f = tcs[idx] || {};
+          const egExp = (f.expected ?? '').toString().slice(0, 80);
+          const egGot = (f.actual ?? '').toString().slice(0, 80);
+          speak(`Test case ${failedIdxs} failed. Expected ${egExp || 'value'}, but got ${egGot || 'different output'}.`);
+        } else {
+          speak(`Test cases ${failedIdxs.join(', ')} failed. Please match the expected outputs exactly.`);
+        }
+      }
+    } catch {}
+  }, [speak, requestSyntaxHelp, code, currentQuestion?.language]);
+  useEffect(() => {
+  try {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    const loadVoices = () => {
+      voicesRef.current = synth.getVoices();
+      setSynthReady(true);
+    };
+    loadVoices();
+    if (typeof synth.onvoiceschanged !== 'undefined') {
+      synth.onvoiceschanged = loadVoices;
+    } else {
+      const t = setInterval(() => {
+        if (synth.getVoices().length > 0) {
+          loadVoices();
+          clearInterval(t);
+        }
+      }, 250);
+      return () => clearInterval(t);
+    }
+  } catch {}
+}, []);
+
+
+  // SEB detection
+  useEffect(() => {
+    const userAgent = navigator.userAgent.toLowerCase();
+    const sebDetected = userAgent.includes('safeexambrowser') || userAgent.includes('seb');
+    setIsSEB(sebDetected);
+    
+    // Apply SEB restrictions
+    if (sebDetected) {
+      document.addEventListener('contextmenu', handleContextMenu);
+      document.addEventListener('keydown', handleKeyDown);
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      
+      // Disable dev tools
+      setInterval(() => {
+        if (window.devtools) {
+          window.location.href = 'about:blank';
+        }
+      }, 1000);
+    }
+    
+    return () => {
+      document.removeEventListener('contextmenu', handleContextMenu);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
+  
+  // Security event handlers
+  const handleContextMenu = (e) => {
+    e.preventDefault();
+    return false;
+  };
+  
+  const handleKeyDown = (e) => {
+    // Prevent developer tools shortcuts
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && 
+        (e.key === 'I' || e.key === 'J' || e.key === 'C')) {
+      e.preventDefault();
+      return false;
+    }
+    
+    // Prevent refresh
+    if (e.key === 'F5' || (e.ctrlKey && e.key === 'r')) {
+      e.preventDefault();
+      return false;
+    }
+    
+    // Prevent copy/paste/cut
+    if ((e.ctrlKey || e.metaKey) && 
+        (e.key === 'c' || e.key === 'v' || e.key === 'x')) {
+      e.preventDefault();
+      return false;
+    }
+    
+    // Prevent print
+    if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
+      e.preventDefault();
+      return false;
+    }
+    
+    // Prevent tab switching
+    if (e.ctrlKey && e.key === 'Tab') {
+      e.preventDefault();
+      return false;
+    }
+    if (e.altKey && e.key === 'Tab') {
+      e.preventDefault();
+      return false;
+    }
+    
+    // Prevent closing window
+    if (e.altKey && e.key === 'F4') {
+      e.preventDefault();
+      return false;
+    }
+    
+    // Prevent escape key in fullscreen
+    if (isFullscreen && e.key === 'Escape') {
+      e.preventDefault();
+      return false;
+    }
+  };
+  
+  const handleBeforeUnload = (e) => {
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  };
+  
+  // Cache management
   const getCacheKey = useCallback((aId, qId, uId) => `codeEditor_${aId}_${qId}_${uId}`, []);
-  const getCacheData = useCallback((key) => { try { const c = localStorage.getItem(key); return c ? JSON.parse(c) : null; } catch { return null; } }, []);
-  const setCacheData = useCallback((key, data) => { try { localStorage.setItem(key, JSON.stringify(data)); lastSaveRef.current = Date.now(); } catch {} }, []);
-  const clearCacheData = useCallback((key) => { try { localStorage.removeItem(key); } catch {} }, []);
-
+  const getCacheData = useCallback((key) => { 
+    try { 
+      const c = localStorage.getItem(key); 
+      return c ? JSON.parse(c) : null; 
+    } catch { 
+      return null; 
+    } 
+  }, []);
+  const setCacheData = useCallback((key, data) => { 
+    try { 
+      localStorage.setItem(key, JSON.stringify(data)); 
+      lastSaveRef.current = Date.now(); 
+    } catch {} 
+  }, []);
+  const clearCacheData = useCallback((key) => { 
+    try { 
+      localStorage.removeItem(key); 
+    } catch {} 
+  }, []);
+  
   const saveToCache = useCallback(() => {
     if (!cacheKeyRef.current || !currentQuestion) return;
-    const payload = { code, timeRemaining, sessionStartTime, questionId, lastSaved: Date.now(), testResults };
+    const payload = { 
+      code, 
+      timeRemaining, 
+      sessionStartTime, 
+      questionId, 
+      lastSaved: Date.now(), 
+      testResults 
+    };
     setCacheData(cacheKeyRef.current, payload);
   }, [code, timeRemaining, sessionStartTime, questionId, testResults, setCacheData, currentQuestion]);
-
+  
   const loadFromCache = useCallback(() => {
     if (!cacheKeyRef.current) return null;
     const cached = getCacheData(cacheKeyRef.current);
@@ -527,11 +765,12 @@ const CodeEditor = () => {
     }
     return cached;
   }, [getCacheData, clearCacheData]);
-
+  
   const debouncedSaveToCache = useCallback(() => {
     if (Date.now() - lastSaveRef.current > 2000) saveToCache();
   }, [saveToCache]);
-
+  
+  // Timer effect
   useEffect(() => {
     if (timeRemaining > 0) {
       timerRef.current = setInterval(() => {
@@ -543,24 +782,37 @@ const CodeEditor = () => {
         });
       }, 1000);
     }
-    return () => { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } };
+    return () => { 
+      if (timerRef.current) { 
+        clearInterval(timerRef.current); 
+        timerRef.current = null; 
+      } 
+    };
   }, [timeRemaining, saveToCache]);
-
-  useEffect(() => { if (code && currentQuestion) debouncedSaveToCache(); }, [code, currentQuestion, debouncedSaveToCache]);
-
+  
+  // Auto-save effect
+  useEffect(() => {
+    if (code && currentQuestion) debouncedSaveToCache();
+  }, [code, currentQuestion, debouncedSaveToCache]);
+  
+  // Initial data loading
   useEffect(() => {
     loadAssessmentData();
     gsap.timeline()
       .fromTo('.editor-header', { y: -50, opacity: 0 }, { y: 0, opacity: 1, duration: 0.8, ease: 'power2.out' })
       .fromTo('.editor-content', { opacity: 0 }, { opacity: 1, duration: 0.6 }, '-=0.4');
   }, [assessmentId]);
-
+  
+  // Question loading effect
   useEffect(() => {
     if (questions.length > 0 && questionId && user) {
       const idx = questions.findIndex(q => q.id === questionId);
       if (idx >= 0) {
         const qn = questions[idx];
-        if (!qn.language) { toast.error('Question configuration error: missing language'); return; }
+        if (!qn.language) { 
+          toast.error('Question configuration error: missing language'); 
+          return; 
+        }
         setCurrentQuestionIndex(idx);
         setCurrentQuestion(qn);
         cacheKeyRef.current = getCacheKey(assessmentId, questionId, user.uid);
@@ -580,7 +832,7 @@ const CodeEditor = () => {
       }
     }
   }, [questionId, questions, user, assessmentId, getCacheKey, loadFromCache]);
-
+  
   const getDefaultCode = (language) => {
     const defaults = {
       python: 'print("Hello World")',
@@ -591,8 +843,8 @@ const CodeEditor = () => {
       c: '#include <stdio.h>\n\nint main() {\n    printf("Hello World\\n");\n    return 0;\n}'
     };
     return defaults[language] || '';
-    };
-
+  };
+  
   const renderSampleOutput = (output, language) => {
     if (!output) return null;
     if (language === 'sql') {
@@ -607,7 +859,7 @@ const CodeEditor = () => {
       </pre>
     );
   };
-
+  
   const loadAssessmentData = async () => {
     try {
       setLoading(true);
@@ -635,7 +887,6 @@ const CodeEditor = () => {
             setCurrentQuestion(qData[idx]);
           }
         } else if (qData.length > 0) {
-          // fix default navigate
           navigate(`/code/${assessmentId}/${qData.id}`, { replace: true });
         }
       }
@@ -660,13 +911,22 @@ const CodeEditor = () => {
       setLoading(false);
     }
   };
-
+  
   const handleCodeChange = (v) => setCode(v || '');
-
+  
   const handleRunCode = async () => {
-    if (!code || !code.trim()) { toast.error('Please write some code first'); return; }
-    if (!currentQuestion?.language) { toast.error('Programming language not specified'); return; }
-    if (!currentQuestion?.testCases || currentQuestion.testCases.length === 0) { toast.error('No test cases available for this question'); return; }
+    if (!code || !code.trim()) { 
+      toast.error('Please write some code first'); 
+      return; 
+    }
+    if (!currentQuestion?.language) { 
+      toast.error('Programming language not specified'); 
+      return; 
+    }
+    if (!currentQuestion?.testCases || currentQuestion.testCases.length === 0) { 
+      toast.error('No test cases available for this question'); 
+      return; 
+    }
     setRunning(true);
     try {
       const result = await CodeExecutionEngine.executeCode(code.trim(), currentQuestion.language, currentQuestion.testCases);
@@ -677,14 +937,14 @@ const CodeEditor = () => {
       } else {
         toast.success(`${result.passedTests}/${result.totalTests} test cases passed. Score: ${result.score}%`);
       }
+      await analyzeAndSpeak(result);
     } catch (e) {
       toast.error(`Code execution failed: ${e.message}`);
     } finally {
       setRunning(false);
     }
   };
-
-  // Build equal-weight review (100/totalQuestions) and include per-question exec sum
+  
   const buildAssessmentReview = (latestSubForCurrent) => {
     const totalQuestions = questions.length || 0;
     const weight = totalQuestions > 0 ? Math.round(100 / totalQuestions) : 0;
@@ -712,9 +972,12 @@ const CodeEditor = () => {
     const totalScore = items.reduce((acc, i) => acc + (i.earnedPoints || 0), 0);
     return { totalQuestions, completedCount, totalScore, items };
   };
-
+  
   const handleSubmitSolution = async () => {
-    if (!testResults) { toast.error('Please run your code first'); return; }
+    if (!testResults) { 
+      toast.error('Please run your code first'); 
+      return; 
+    }
     setSubmitting(true);
     try {
       const timeSpent = Math.floor((Date.now() - sessionStartTime) / 1000);
@@ -735,9 +998,7 @@ const CodeEditor = () => {
         createdAt: new Date()
       };
       const subRef = await addDoc(collection(db, 'submissions'), subData);
-
       if (cacheKeyRef.current) clearCacheData(cacheKeyRef.current);
-
       setSubmissions((prev) => ({
         ...prev,
         [currentQuestion.id]: {
@@ -747,7 +1008,6 @@ const CodeEditor = () => {
         }
       }));
       toast.success(`Solution submitted! Score: ${testResults.score}%`);
-
       if (currentQuestionIndex < questions.length - 1) {
         const nextQuestion = questions[currentQuestionIndex + 1];
         navigate(`/code/${assessmentId}/${nextQuestion.id}`);
@@ -789,19 +1049,19 @@ const CodeEditor = () => {
       setSubmitting(false);
     }
   };
-
+  
   const handleQuestionChange = (idx) => {
     saveToCache();
     const q = questions[idx];
     navigate(`/code/${assessmentId}/${q.id}`);
   };
-
+  
   const handleTimeUp = () => {
     if (cacheKeyRef.current) clearCacheData(cacheKeyRef.current);
     toast.error('Time\'s up! Assessment ended.');
     navigate('/dashboard');
   };
-
+  
   const formatTime = (s) => {
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
@@ -809,7 +1069,7 @@ const CodeEditor = () => {
     if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
     return `${m}:${sec.toString().padStart(2, '0')}`;
   };
-
+  
   const getTimeColor = () => {
     if (!timeRemaining) return 'text-gray-600';
     const pct = (timeRemaining / (assessment?.timeLimit * 60)) * 100;
@@ -817,7 +1077,7 @@ const CodeEditor = () => {
     if (pct > 25) return 'text-yellow-600';
     return 'text-red-600';
   };
-
+  
   const resetCode = () => {
     const reset = currentQuestion?.starterCode || getDefaultCode(currentQuestion?.language);
     setCode(reset);
@@ -825,9 +1085,12 @@ const CodeEditor = () => {
     saveToCache();
     toast.success('Code reset');
   };
-
-  const saveProgress = () => { saveToCache(); toast.success('Progress saved'); };
-
+  
+  const saveProgress = () => { 
+    saveToCache(); 
+    toast.success('Progress saved'); 
+  };
+  
   const restartSession = () => {
     if (cacheKeyRef.current) clearCacheData(cacheKeyRef.current);
     setCode(currentQuestion?.starterCode || getDefaultCode(currentQuestion?.language));
@@ -837,28 +1100,17 @@ const CodeEditor = () => {
     setIsFromCache(false);
     toast.success('Session restarted');
   };
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-      saveToCache();
-    };
-  }, [saveToCache]);
-
-  // Compute average execution ms helper
+  
   const computeAvgExecMs = (review) => {
     if (!review || !Array.isArray(review.items) || review.items.length === 0) return 0;
-    // Use all attempted questions; alternatively filter only accepted:
     const considered = review.items.filter(() => true);
     const sum = considered.reduce((acc, it) => acc + (Number(it.executionTimeMs) || 0), 0);
     const avg = considered.length > 0 ? Math.round(sum / considered.length) : 0;
     return avg;
   };
-
-  // Cleanup submissions and keep only assessmentsCompleted object { score, avgExecMs, completedAt }
+  
   const cleanupSubmissionsAndPersistScore = async (totalScore) => {
     try {
-      // 1) Delete all submissions for this user+assessment
       const snap = await getDocs(
         query(
           collection(db, 'submissions'),
@@ -877,8 +1129,7 @@ const CodeEditor = () => {
         }
       }
       await batch.commit();
-
-      // 2) Build payload for assessmentsCompleted.{assessmentId}
+      
       const review = assessmentReview || { items: [], totalScore: totalScore || 0 };
       const avgExecMs = computeAvgExecMs(review);
       const completedAt = new Date();
@@ -887,19 +1138,17 @@ const CodeEditor = () => {
         avgExecMs,
         completedAt
       };
-
-      // 3) Update user map
+      
       const userRef = doc(db, 'users', user.uid);
       await updateDoc(userRef, {
         [`assessmentsCompleted.${assessmentId}`]: payload
       });
-
       toast.success('Saved score and cleaned up submissions');
     } catch (e) {
       toast.error('Cleanup failed: ' + e.message);
     }
   };
-
+  
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-900">
@@ -907,7 +1156,7 @@ const CodeEditor = () => {
       </div>
     );
   }
-
+  
   if (!currentQuestion) {
     return (
       <div className="flex items-center justify-center min-h-screen text-white bg-gray-900">
@@ -924,9 +1173,16 @@ const CodeEditor = () => {
       </div>
     );
   }
-
+  
   return (
     <div className={`${isFullscreen ? 'fixed inset-0 z-50' : 'min-h-screen'} bg-gray-900 text-white flex min-w-0 min-h-0`}>
+      {/* SEB Banner */}
+      {isSEB && (
+        <div className="p-2 text-sm text-center bg-red-900">
+          Running in Safe Exam Browser Mode - All security restrictions are active
+        </div>
+      )}
+      
       {/* Sidebar */}
       {showSidebar && (
         <div className="flex flex-col min-w-0 bg-gray-800 border-r border-gray-700 w-80">
@@ -944,7 +1200,6 @@ const CodeEditor = () => {
               Client-side execution (Piston API + AlaSQL)
             </div>
           </div>
-
           <div className="p-4 border-b border-gray-700">
             <div className="flex items-center justify-between">
               <span className="text-gray-400">Time Remaining</span>
@@ -953,7 +1208,6 @@ const CodeEditor = () => {
               </div>
             </div>
           </div>
-
           <div className="flex-1 min-h-0 overflow-y-auto">
             <div className="p-4">
               <h3 className="mb-3 font-semibold">Questions</h3>
@@ -992,7 +1246,7 @@ const CodeEditor = () => {
           </div>
         </div>
       )}
-
+      
       {/* Main */}
       <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
         {/* Header */}
@@ -1042,10 +1296,17 @@ const CodeEditor = () => {
               >
                 {isFullscreen ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
               </button>
+              <Link 
+                to="/seb-config" 
+                className="p-2 transition-colors rounded-lg hover:bg-gray-700"
+                title="SEB Configuration"
+              >
+                <AlertTriangle className="w-5 h-5" />
+              </Link>
             </div>
           </div>
         </div>
-
+        
         {/* Content */}
         <div className="flex flex-1 min-w-0 min-h-0 editor-content">
           {/* Problem */}
@@ -1089,7 +1350,7 @@ const CodeEditor = () => {
               </div>
             </div>
           </div>
-
+          
           {/* Editor + Results */}
           <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
             <div className="flex-1 min-w-0 min-h-0">
@@ -1102,9 +1363,31 @@ const CodeEditor = () => {
                 isRunning={running || submitting}
                 testResults={testResults?.results}
                 theme="vs-dark"
-                onCopy={handleCopy}
-                onPaste={handlePaste}
-                onCut={handleCut}
+                onCopy={isSEB ? () => {} : undefined}
+                onPaste={isSEB ? () => {} : undefined}
+                onCut={isSEB ? () => {} : undefined}
+                options={{
+                  readOnly: false,
+                  domReadOnly: false,
+                  quickSuggestions: false,
+                  suggestOnTriggerCharacters: false,
+                  acceptSuggestionOnEnter: 'off',
+                  tabCompletion: 'off',
+                  parameterHints: { enabled: false },
+                  wordBasedSuggestions: 'allDocuments',
+                  autoIndent: false,
+                  formatOnPaste: false,
+                  formatOnType: false,
+                  suggestSelection: 'first',
+                  cursorBlinking: 'blink',
+                  minimap: { enabled: false },
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  lineNumbers: 'on',
+                  renderLineHighlight: 'all',
+                  renderIndentGuides: true,
+                  renderWhitespace: 'selection'
+                }}
               />
             </div>
             <div className="min-w-0 bg-gray-800 border-t border-gray-700">
@@ -1162,7 +1445,7 @@ const CodeEditor = () => {
           </div>
         </div>
       </div>
-
+      
       {/* Assessment Review Modal */}
       {showReview && assessmentReview && (
         <div className="fixed inset-0 z-[4] bg-black/60 flex items-center justify-center p-4">
@@ -1171,7 +1454,6 @@ const CodeEditor = () => {
               <h3 className="text-lg font-semibold">Assessment Review</h3>
               <button onClick={() => setShowReview(false)} className="p-2 rounded hover:bg-gray-700">✕</button>
             </div>
-
             <div ref={reviewRef} className="px-5 py-4 space-y-4 overflow-auto max-h-[70vh] min-w-0">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -1189,7 +1471,6 @@ const CodeEditor = () => {
                   <p className="text-2xl font-bold">{assessmentReview.totalScore}/100</p>
                 </div>
               </div>
-
               <div className="space-y-3">
                 {assessmentReview.items.map((it, idx) => (
                   <div key={it.questionId || idx} className="p-4 bg-gray-900 border border-gray-700 rounded-lg">
@@ -1218,7 +1499,6 @@ const CodeEditor = () => {
                         </p>
                       </div>
                     </div>
-
                     <div className="mt-3">
                       <p className="mb-1 text-sm text-gray-400">Submitted Code</p>
                       <pre className="p-3 overflow-auto text-xs text-green-300 break-words whitespace-pre-wrap bg-gray-800 border border-gray-700 rounded max-h-48">
@@ -1229,7 +1509,6 @@ const CodeEditor = () => {
                 ))}
               </div>
             </div>
-
             <div className="flex items-center justify-between px-5 py-3 border-t border-gray-700">
               <button
                 onClick={async () => {
@@ -1246,7 +1525,6 @@ const CodeEditor = () => {
                   const h = imgProps.height * ratio;
                   pdf.addImage(img, 'PNG', (pageW - w) / 2, 24, w, h);
                   pdf.save(`${assessment?.title || 'assessment'}-review.pdf`);
-                  // After exporting, cleanup and persist score object
                   await cleanupSubmissionsAndPersistScore(assessmentReview.totalScore);
                 }}
                 className="px-4 py-2 bg-purple-600 rounded hover:bg-purple-700"
