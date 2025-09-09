@@ -31,7 +31,8 @@ import {
   ChevronDown,
   ChevronUp,
   Volume2,
-  VolumeX
+  VolumeX,
+  Copy 
 } from 'lucide-react';
 import MonacoEditor from '../../components/CodeEditor/MonacoEditor';
 import LoadingSpinner from '../../components/UI/LoadingSpinner';
@@ -558,6 +559,44 @@ Output format:
 }, []);
 
 // Clear cache for all questions in this assessment for this user
+// Allow temporary bypass of copy blockers for the Copy button
+const allowCopyRef = useRef(false);
+
+// Copy code safely via Clipboard API with fallback
+const copyCode = useCallback(async () => {
+  try {
+    if (!code || !code.trim()) {
+      toast.error('Nothing to copy');
+      return;
+    }
+    allowCopyRef.current = true; // temporarily bypass blockers for this trusted action
+    // Prefer async Clipboard API (requires HTTPS and user gesture)
+    await navigator.clipboard.writeText(code);
+    toast.success('Code copied safely');
+  } catch (err) {
+    // Fallback for older/Safari: use execCommand inside the click handler
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = code;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'absolute';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (ok) {
+        toast.success('Code copied');
+      } else {
+        toast.error('Copy failed. Check browser permissions.');
+      }
+    } catch (e2) {
+      toast.error('Copy failed. Clipboard not available.');
+    }
+  } finally {
+    allowCopyRef.current = false;
+  }
+}, [code]);
 
 const analyzeAndSpeak = useCallback(async (execResult) => {
   try {
@@ -832,11 +871,13 @@ useEffect(() => {
 // Block copy/cut/paste, context menu, drag/drop, and clipboard keystrokes within the assessment
 useEffect(() => {
   const prevent = (e) => {
+    if (allowCopyRef.current) return; // allow when trusted copy button is active
     e.preventDefault();
     e.stopPropagation();
     return false;
   };
   const onKey = (e) => {
+    if (allowCopyRef.current) return; // allow trusted copy
     const k = (e.key || '').toLowerCase();
     const isCopy = (e.ctrlKey || e.metaKey) && k === 'c';
     const isPaste = (e.ctrlKey || e.metaKey) && k === 'v';
@@ -847,7 +888,6 @@ useEffect(() => {
     }
   };
 
-  // Capture-phase to beat Monaco and page handlers
   document.addEventListener('copy', prevent, true);
   document.addEventListener('cut', prevent, true);
   document.addEventListener('paste', prevent, true);
@@ -866,6 +906,7 @@ useEffect(() => {
     document.removeEventListener('keydown', onKey, true);
   };
 }, []);
+
 
   // Timer effect
   useEffect(() => {
@@ -1387,6 +1428,16 @@ useEffect(() => {
                 <RefreshCw className="w-5 h-5" />
               </button>
               <button
+  onClick={copyCode}
+  disabled={!code || (running || submitting)}
+  className="flex items-center px-6 py-2 font-medium text-white transition-colors bg-gray-700 rounded-lg hover:bg-gray-600 disabled:bg-gray-600"
+  title="Copy Code (safe)"
+>
+  <Copy className="w-4 h-4 mr-2" />
+  Copy Code
+</button>
+
+              <button
                 onClick={() => setIsFullscreen(!isFullscreen)}
                 className="p-2 transition-colors rounded-lg hover:bg-gray-700"
                 title="Toggle Fullscreen"
@@ -1494,8 +1545,7 @@ useEffect(() => {
                   renderLineHighlight: 'all',
                   renderIndentGuides: true,
                   renderWhitespace: 'selection',
-                  contextmenu: false,
-                  dragAndDrop: false
+                  
                 }}
               />
             </div>
