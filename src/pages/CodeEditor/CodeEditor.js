@@ -557,6 +557,7 @@ Output format:
   }
 }, []);
 
+// Clear cache for all questions in this assessment for this user
 
 const analyzeAndSpeak = useCallback(async (execResult) => {
   try {
@@ -769,7 +770,103 @@ const analyzeAndSpeak = useCallback(async (execResult) => {
   const debouncedSaveToCache = useCallback(() => {
     if (Date.now() - lastSaveRef.current > 2000) saveToCache();
   }, [saveToCache]);
-  
+  const clearAllQuestionCaches = useCallback(() => {
+  try {
+    if (!questions || !Array.isArray(questions) || !user) return;
+    questions.forEach(q => {
+      const key = getCacheKey(assessmentId, q.id, user.uid);
+      clearCacheData(key);
+    });
+  } catch {}
+}, [questions, user, assessmentId, getCacheKey, clearCacheData]);
+// Terminate assessment on tab switch and force restart from first question
+const handleTabSwitchViolation = useCallback(async () => {
+  try {
+    // Optional: log violation to Firestore
+    try {
+      if (user && assessmentId) {
+        await addDoc(collection(db, 'assessmentViolations'), {
+          userId: user.uid,
+          assessmentId,
+          type: 'tab_switch',
+          occurredAt: new Date()
+        });
+      }
+    } catch {}
+
+    // Clear all local caches for this assessment
+    clearAllQuestionCaches();
+
+    // Stash a one-time banner for next entry
+    try {
+      localStorage.setItem('lastAssessmentViolation', JSON.stringify({
+        assessmentId,
+        at: Date.now(),
+        reason: 'Tab switch detected'
+      }));
+    } catch {}
+
+    // Reset local state and exit the editor
+    setTestResults(null);
+    setIsFromCache(false);
+    setTimeRemaining(0);
+    setSessionStartTime(null);
+
+    // Leave assessment screen; next entry must start from Q1
+    toast.error('Violation: Tab switch detected. Assessment terminated. Start again from Question 1.', { duration: 5000 });
+    navigate('/dashboard', { replace: true });
+  } catch {
+    navigate('/dashboard', { replace: true });
+  }
+}, [assessmentId, user, clearAllQuestionCaches, navigate]);
+// End the attempt immediately if the tab becomes hidden (switch/minimize/app switch)
+useEffect(() => {
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') {
+      handleTabSwitchViolation();
+    }
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+  return () => document.removeEventListener('visibilitychange', onVisibility);
+}, [handleTabSwitchViolation]);
+// Block copy/cut/paste, context menu, drag/drop, and clipboard keystrokes within the assessment
+useEffect(() => {
+  const prevent = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    return false;
+  };
+  const onKey = (e) => {
+    const k = (e.key || '').toLowerCase();
+    const isCopy = (e.ctrlKey || e.metaKey) && k === 'c';
+    const isPaste = (e.ctrlKey || e.metaKey) && k === 'v';
+    const isCut = (e.ctrlKey || e.metaKey) && k === 'x';
+    if (isCopy || isPaste || isCut) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+
+  // Capture-phase to beat Monaco and page handlers
+  document.addEventListener('copy', prevent, true);
+  document.addEventListener('cut', prevent, true);
+  document.addEventListener('paste', prevent, true);
+  document.addEventListener('contextmenu', prevent, true);
+  document.addEventListener('dragstart', prevent, true);
+  document.addEventListener('drop', prevent, true);
+  document.addEventListener('keydown', onKey, true);
+
+  return () => {
+    document.removeEventListener('copy', prevent, true);
+    document.removeEventListener('cut', prevent, true);
+    document.removeEventListener('paste', prevent, true);
+    document.removeEventListener('contextmenu', prevent, true);
+    document.removeEventListener('dragstart', prevent, true);
+    document.removeEventListener('drop', prevent, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+}, []);
+
   // Timer effect
   useEffect(() => {
     if (timeRemaining > 0) {
@@ -1310,7 +1407,16 @@ const analyzeAndSpeak = useCallback(async (execResult) => {
         {/* Content */}
         <div className="flex flex-1 min-w-0 min-h-0 editor-content">
           {/* Problem */}
-          <div className="max-w-full min-w-0 overflow-y-auto bg-gray-800 border-r border-gray-700 basis-1/3 shrink-0">
+         <div
+  className="max-w-full min-w-0 overflow-y-auto bg-gray-800 border-r border-gray-700 basis-1/3 shrink-0"
+  style={{ userSelect: 'none' }}
+  onCopy={(e) => { e.preventDefault(); e.stopPropagation(); }}
+  onCut={(e) => { e.preventDefault(); e.stopPropagation(); }}
+  onPaste={(e) => { e.preventDefault(); e.stopPropagation(); }}
+  onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
+  onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
+  onDrop={(e) => { e.preventDefault(); e.stopPropagation(); }}
+>
             <div className="p-6">
               <h2 className="mb-4 text-xl font-bold">Problem Description</h2>
               <div className="prose prose-invert max-w-none">
@@ -1366,6 +1472,7 @@ const analyzeAndSpeak = useCallback(async (execResult) => {
                 onCopy={isSEB ? () => {} : undefined}
                 onPaste={isSEB ? () => {} : undefined}
                 onCut={isSEB ? () => {} : undefined}
+                
                 options={{
                   readOnly: false,
                   domReadOnly: false,
@@ -1386,7 +1493,9 @@ const analyzeAndSpeak = useCallback(async (execResult) => {
                   lineNumbers: 'on',
                   renderLineHighlight: 'all',
                   renderIndentGuides: true,
-                  renderWhitespace: 'selection'
+                  renderWhitespace: 'selection',
+                  contextmenu: false,
+                  dragAndDrop: false
                 }}
               />
             </div>
