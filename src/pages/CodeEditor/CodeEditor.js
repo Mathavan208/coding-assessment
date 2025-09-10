@@ -491,6 +491,7 @@ const CodeEditor = () => {
   const [isFromCache, setIsFromCache] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [assessmentReview, setAssessmentReview] = useState(null);
+  const [showMarksInfo, setShowMarksInfo] = useState(false); // NEW overlay flag
     // Voice/TTS
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const voicesRef = useRef([]);
@@ -870,23 +871,30 @@ useEffect(() => {
 }, [handleTabSwitchViolation]);
 // Block copy/cut/paste, context menu, drag/drop, and clipboard keystrokes within the assessment
 useEffect(() => {
-  const prevent = (e) => {
-    if (allowCopyRef.current) return; // allow when trusted copy button is active
+const prevent = (e) => {
+  if (allowCopyRef.current) return; // allow trusted button copy
+  const inEditor = e.target && e.target.closest && e.target.closest('.monaco-editor');
+  if (e.type === 'paste' && inEditor) return; // allow paste in Monaco
+  e.preventDefault();
+  e.stopPropagation();
+  return false;
+};
+
+const onKey = (e) => {
+  if (allowCopyRef.current) return; // allow trusted button copy
+  const k = (e.key || '').toLowerCase();
+  const isCopy = (e.ctrlKey || e.metaKey) && k === 'c';
+  const isPaste = (e.ctrlKey || e.metaKey) && k === 'v';
+  const isCut  = (e.ctrlKey || e.metaKey) && k === 'x';
+  const inEditor = e.target && e.target.closest && e.target.closest('.monaco-editor');
+
+  if (isPaste && inEditor) return; // let paste through in Monaco
+  if (isCopy || isPaste || isCut) {
     e.preventDefault();
     e.stopPropagation();
-    return false;
-  };
-  const onKey = (e) => {
-    if (allowCopyRef.current) return; // allow trusted copy
-    const k = (e.key || '').toLowerCase();
-    const isCopy = (e.ctrlKey || e.metaKey) && k === 'c';
-    const isPaste = (e.ctrlKey || e.metaKey) && k === 'v';
-    const isCut = (e.ctrlKey || e.metaKey) && k === 'x';
-    if (isCopy || isPaste || isCut) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-  };
+  }
+};
+
 
   document.addEventListener('copy', prevent, true);
   document.addEventListener('cut', prevent, true);
@@ -1053,140 +1061,191 @@ useEffect(() => {
   const handleCodeChange = (v) => setCode(v || '');
   
   const handleRunCode = async () => {
-    if (!code || !code.trim()) { 
-      toast.error('Please write some code first'); 
-      return; 
+  if (!code || !code.trim()) { 
+    toast.error('Please write some code first'); 
+    return; 
+  }
+  if (!currentQuestion?.language) { 
+    toast.error('Programming language not specified'); 
+    return; 
+  }
+  if (!currentQuestion?.testCases || currentQuestion.testCases.length === 0) { 
+    toast.error('No test cases available for this question'); 
+    return; 
+  }
+  setRunning(true);
+  try {
+    const result = await CodeExecutionEngine.executeCode(
+      code.trim(),
+      currentQuestion.language,
+      currentQuestion.testCases
+    );
+    console.log(result);
+    setTestResults(result);
+    saveToCache();
+
+    // NEW: compute marks for this question
+    const totalQ = Array.isArray(questions) ? questions.length : (assessment?.questions?.length || 0);
+    const totalT = currentQuestion?.testCases?.length || 0;
+    const passed = result?.passedTests || 0;
+    const { questionMax, perCase, earned } = computeQuestionMarks(totalQ, totalT, passed);
+
+    // Friendly toast with marks and percent
+    const pct = result?.totalTests ? Math.round((passed / result.totalTests) * 100) : 0;
+    if (passed === result.totalTests) {
+      toast.success(`🎉 All ${result.totalTests} tests passed. Earned ${earned.toFixed(2)}/${questionMax.toFixed(2)} marks (${pct}%).`);
+    } else {
+      toast.success(`${passed}/${result.totalTests} tests passed. Earned ${earned.toFixed(2)}/${questionMax.toFixed(2)} marks (${pct}%).`);
     }
-    if (!currentQuestion?.language) { 
-      toast.error('Programming language not specified'); 
-      return; 
-    }
-    if (!currentQuestion?.testCases || currentQuestion.testCases.length === 0) { 
-      toast.error('No test cases available for this question'); 
-      return; 
-    }
-    setRunning(true);
-    try {
-      const result = await CodeExecutionEngine.executeCode(code.trim(), currentQuestion.language, currentQuestion.testCases);
-      setTestResults(result);
-      saveToCache();
-      if (result.passedTests === result.totalTests) {
-        toast.success(`🎉 All ${result.totalTests} test cases passed! Score: ${result.score}%`);
-      } else {
-        toast.success(`${result.passedTests}/${result.totalTests} test cases passed. Score: ${result.score}%`);
-      }
-      await analyzeAndSpeak(result);
-    } catch (e) {
-      toast.error(`Code execution failed: ${e.message}`);
-    } finally {
-      setRunning(false);
-    }
-  };
-  
+  } catch (e) {
+    toast.error(`Code execution failed: ${e.message}`);
+  } finally {
+    setRunning(false);
+  }
+};
+
+// Update submission to persist marks instead of percent
+  const computeQuestionMarks = useCallback((totalQuestions, totalTestCases, passedCount) => {
+  const qMax = totalQuestions > 0 ? 100 / totalQuestions : 0;       // 100/N
+  const perCase = totalTestCases > 0 ? qMax / totalTestCases : 0;   // (100/N)/T
+  const earned = Math.max(0, Math.min(passedCount, totalTestCases)) * perCase;
+  return { questionMax: qMax, perCase, earned };
+}, []);
+useEffect(() => {
+  try {
+    if (!assessmentId) return;
+    const key = `marksInfoSeen_${assessmentId}`;
+    const seen = localStorage.getItem(key);
+    if (!seen) setShowMarksInfo(true);
+  } catch {}
+}, [assessmentId]);
   const buildAssessmentReview = (latestSubForCurrent) => {
-    const totalQuestions = questions.length || 0;
-    const weight = totalQuestions > 0 ? Math.round(100 / totalQuestions) : 0;
-    const items = questions.map((q) => {
-      const sub = q.id === latestSubForCurrent?.questionId ? latestSubForCurrent : submissions[q.id];
-      const status = (sub?.status || sub?.testResults?.status || '').toLowerCase();
-      const passedTests = sub?.passedTests ?? sub?.testResults?.passedTests ?? 0;
-      const totalTests = sub?.totalTests ?? sub?.testResults?.totalTests ?? (q?.testCases?.length ?? 0);
-      const tcs = sub?.testCasesResults || sub?.testResults?.testCases || [];
-      const executionTimeMs = Array.isArray(tcs) ? tcs.reduce((acc, t) => acc + (t?.executionTime || 0), 0) : 0;
-      const earnedPoints = status === 'accepted' ? weight : 0;
-      return {
-        questionId: q.id,
-        title: q.title,
-        status,
-        passedTests,
-        totalTests,
-        earnedPoints,
-        executionTimeMs,
-        timeSpent: sub?.timeSpent || null,
-        code: sub?.code || '',
-      };
-    });
-    const completedCount = items.filter(i => i.status === 'accepted').length;
-    const totalScore = items.reduce((acc, i) => acc + (i.earnedPoints || 0), 0);
-    return { totalQuestions, completedCount, totalScore, items };
-  };
-  
+  const totalQuestions = questions.length || 0;
+  const items = questions.map((q) => {
+    const sub = q.id === latestSubForCurrent?.questionId ? latestSubForCurrent : submissions[q.id];
+    const status = (sub?.status || sub?.testResults?.status || '').toLowerCase();
+    const passedTests = sub?.passedTests ?? sub?.testResults?.passedTests ?? 0;
+    const totalTests = sub?.totalTests ?? sub?.testResults?.totalTests ?? (q?.testCases?.length ?? 0);
+    const tcs = sub?.testCasesResults || sub?.testResults?.testCases || [];
+    const executionTimeMs = Array.isArray(tcs) ? tcs.reduce((acc, t) => acc + (t?.executionTime || 0), 0) : 0;
+
+    // NEW: use stored marks for this question
+    const earnedPoints = typeof sub?.score === 'number'
+      ? sub.score
+      : (() => {
+          // fallback compute if needed
+          const { earned } = computeQuestionMarks(totalQuestions, totalTests, passedTests);
+          return earned;
+        })();
+
+    return {
+      questionId: q.id,
+      title: q.title,
+      status,
+      passedTests,
+      totalTests,
+      earnedPoints,                // marks earned for this question
+      executionTimeMs,
+      timeSpent: sub?.timeSpent || null,
+      code: sub?.code || '',
+    };
+  });
+
+ const completedCount = items.filter(i => (i.status || '').toLowerCase() === 'accepted' || (i.earnedPoints || 0) > 0).length;
+  // Total score is sum of per-question earned marks; clamp to 100
+  const sum = items.reduce((acc, i) => acc + (Number(i.earnedPoints) || 0), 0);
+  const totalScore = Math.min(100, Math.max(0, Math.round(sum)));
+  return { totalQuestions, completedCount, totalScore, items };
+};
   const handleSubmitSolution = async () => {
-    if (!testResults) { 
-      toast.error('Please run your code first'); 
-      return; 
-    }
-    setSubmitting(true);
-    try {
-      const timeSpent = Math.floor((Date.now() - sessionStartTime) / 1000);
-      const subData = {
-        userId: user.uid,
-        assessmentId,
-        questionId: currentQuestion.id,
-        code,
-        language: currentQuestion.language,
-        status: testResults.status || "completed",
-        score: testResults.score || 0,
-        maxScore: 100,
-        testCasesResults: testResults.testCases || [],
-        passedTests: testResults.passedTests || 0,
-        totalTests: testResults.totalTests || 0,
-        timeSpent,
-        submittedAt: new Date(),
-        createdAt: new Date()
-      };
-      const subRef = await addDoc(collection(db, 'submissions'), subData);
-      if (cacheKeyRef.current) clearCacheData(cacheKeyRef.current);
-      setSubmissions((prev) => ({
-        ...prev,
-        [currentQuestion.id]: {
-          ...subData,
-          submissionId: subRef.id,
-          completed: true
-        }
-      }));
-      toast.success(`Solution submitted! Score: ${testResults.score}%`);
-      if (currentQuestionIndex < questions.length - 1) {
-        const nextQuestion = questions[currentQuestionIndex + 1];
-        navigate(`/code/${assessmentId}/${nextQuestion.id}`);
-      } else {
-        questions.forEach(q => {
-          const key = getCacheKey(assessmentId, q.id, user.uid);
-          clearCacheData(key);
+  if (!testResults) { 
+    toast.error('Please run your code first'); 
+    return; 
+  }
+  setSubmitting(true);
+  try {
+    const timeSpent = Math.floor((Date.now() - sessionStartTime) / 1000);
+
+    // NEW: compute marks at submit time
+    const totalQ = Array.isArray(questions) ? questions.length : (assessment?.questions?.length || 0);
+    const totalT = currentQuestion?.testCases?.length || 0;
+    const passed = testResults?.passedTests || 0;
+    const { questionMax, perCase, earned } = computeQuestionMarks(totalQ, totalT, passed);
+
+    const subData = {
+      userId: user.uid,
+      assessmentId,
+      questionId: currentQuestion.id,
+      code,
+      language: currentQuestion.language,
+      status: testResults.status || "completed",
+      // CHANGED: marks-based scoring
+      score: Number(earned.toFixed(4)),                  // earned marks for this question
+      maxScore: Number(questionMax.toFixed(4)),          // per-question maximum marks
+      perTestCaseMarks: Number(perCase.toFixed(4)),      // for reference/debug
+      testCasesResults: testResults.testCases || [],
+      passedTests: testResults.passedTests || 0,
+      totalTests: testResults.totalTests || 0,
+      timeSpent,
+      submittedAt: new Date(),
+      createdAt: new Date()
+    };
+
+    const subRef = await addDoc(collection(db, 'submissions'), subData);
+    if (cacheKeyRef.current) clearCacheData(cacheKeyRef.current);
+    setSubmissions((prev) => ({
+      ...prev,
+      [currentQuestion.id]: {
+        ...subData,
+        submissionId: subRef.id,
+        completed: true
+      }
+    }));
+    toast.success(`Solution submitted! Earned ${subData.score.toFixed(2)}/${subData.maxScore.toFixed(2)} marks for this question.`);
+
+    if (currentQuestionIndex < questions.length - 1) {
+      const nextQuestion = questions[currentQuestionIndex + 1];
+      navigate(`/code/${assessmentId}/${nextQuestion.id}`);
+    } else {
+      // Final question: clear caches and generate overall review
+      questions.forEach(q => {
+        const key = getCacheKey(assessmentId, q.id, user.uid);
+        clearCacheData(key);
+      });
+      const review = buildAssessmentReview({ ...subData, testResults });
+      try {
+        await addDoc(collection(db, 'assessmentReviews'), {
+          userId: user.uid,
+          assessmentId,
+          title: assessment?.title || '',
+          createdAt: new Date(),
+          ...review
         });
-        const review = buildAssessmentReview({ ...subData, testResults });
-        try {
-          await addDoc(collection(db, 'assessmentReviews'), {
+        await setDoc(
+          doc(db, 'userAssessments', `${user.uid}_${assessmentId}`),
+          {
             userId: user.uid,
             assessmentId,
-            title: assessment?.title || '',
-            createdAt: new Date(),
-            ...review
-          });
-          await setDoc(
-            doc(db, 'userAssessments', `${user.uid}_${assessmentId}`),
-            {
-              userId: user.uid,
-              assessmentId,
-              status: 'completed',
-              totalScore: review.totalScore,
-              completedAt: new Date(),
-              totalQuestions: review.totalQuestions,
-              completedCount: review.completedCount,
-            },
-            { merge: true }
-          );
-        } catch {}
-        setAssessmentReview(review);
-        setShowReview(true);
-        toast.success('Assessment completed! Review generated.');
-      }
-    } catch (e) {
-      toast.error('Failed to submit solution: ' + e.message);
-    } finally {
-      setSubmitting(false);
+            status: 'completed',
+            totalScore: review.totalScore,
+            completedAt: new Date(),
+            totalQuestions: review.totalQuestions,
+            completedCount: review.completedCount,
+          },
+          { merge: true }
+        );
+      } catch {}
+      setAssessmentReview(review);
+      setShowReview(true);
+      toast.success('Assessment completed! Review generated.');
     }
-  };
+  } catch (e) {
+    toast.error('Failed to submit solution: ' + e.message);
+  } finally {
+    setSubmitting(false);
+  }
+};
+
   
   const handleQuestionChange = (idx) => {
     saveToCache();
@@ -1521,7 +1580,7 @@ useEffect(() => {
                 testResults={testResults?.results}
                 theme="vs-dark"
                 onCopy={isSEB ? () => {} : undefined}
-                onPaste={isSEB ? () => {} : undefined}
+                onPaste={undefined}
                 onCut={isSEB ? () => {} : undefined}
                 
                 options={{
@@ -1604,7 +1663,43 @@ useEffect(() => {
           </div>
         </div>
       </div>
-      
+      {/* Marks info overlay (shown on first load per assessment) */}
+{showMarksInfo && (
+  <div className="fixed inset-0 z-[18] flex items-center justify-center p-4 bg-black/60">
+    <div className="w-full max-w-xl p-6 bg-gray-800 border border-gray-700 rounded-lg shadow-2xl">
+      <h3 className="mb-3 text-lg font-semibold text-white">Important: How marks are recorded</h3>
+      <div className="space-y-3 text-sm text-gray-200">
+        <p>
+          - Each question is worth an equal share of 100 marks, divided evenly across its test cases; marks are awarded only for test cases passed. For example, if the assessment has 3 questions, each question is worth ~33.33 marks, so with 5 test cases it is ~6.67 per case. Passing 3/5 would award ~20 marks for that question. [7][2]
+        </p>
+        <p>
+          - Final assessment marks are recorded only after submitting the last question; please ensure the final question is submitted to finalize the score. [1]
+        </p>
+      </div>
+      <div className="flex items-center justify-end gap-2 mt-4">
+        <button
+          className="px-3 py-2 text-sm text-gray-200 bg-gray-700 rounded hover:bg-gray-600"
+          onClick={() => {
+            try {
+              const key = `marksInfoSeen_${assessmentId}`;
+              localStorage.setItem(key, '1');
+            } catch {}
+            setShowMarksInfo(false);
+          }}
+        >
+          Don't show again
+        </button>
+        <button
+          className="px-4 py-2 text-sm text-white bg-blue-600 rounded hover:bg-blue-700"
+          onClick={() => setShowMarksInfo(false)}
+        >
+          Got it
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
       {/* Assessment Review Modal */}
       {showReview && assessmentReview && (
         <div className="fixed inset-0 z-[4] bg-black/60 flex items-center justify-center p-4">
