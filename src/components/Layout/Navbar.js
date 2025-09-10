@@ -71,7 +71,7 @@ const Navbar = () => {
               <div className="p-2 rounded-lg bg-gradient-to-r from-blue-600 to-purple-600">
                 <Code className="w-6 h-6 text-white" />
               </div>
-              <span className="text-xl font-bold text-gray-900">CodeMaster</span>
+              <span className="text-xl font-bold text-gray-900">Pocket mentor</span>
             </Link>
 
             {/* Desktop Navigation */}
