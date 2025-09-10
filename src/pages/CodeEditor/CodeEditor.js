@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { useMemo } from 'react';
 import {
   doc,
   getDoc,
@@ -492,6 +493,9 @@ const CodeEditor = () => {
   const [showReview, setShowReview] = useState(false);
   const [assessmentReview, setAssessmentReview] = useState(null);
   const [showMarksInfo, setShowMarksInfo] = useState(false); // NEW overlay flag
+  const TAB_SWITCH_LIMIT = 4; // NEW
+const [tabSwitchCount, setTabSwitchCount] = useState(0); // NEW
+
     // Voice/TTS
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const voicesRef = useRef([]);
@@ -823,6 +827,8 @@ const analyzeAndSpeak = useCallback(async (execResult) => {
 const handleTabSwitchViolation = useCallback(async () => {
   try {
     // Optional: log violation to Firestore
+    try { if (tabSwitchKey) localStorage.removeItem(tabSwitchKey); } catch {}
+
     try {
       if (user && assessmentId) {
         await addDoc(collection(db, 'assessmentViolations'), {
@@ -860,15 +866,9 @@ const handleTabSwitchViolation = useCallback(async () => {
   }
 }, [assessmentId, user, clearAllQuestionCaches, navigate]);
 // End the attempt immediately if the tab becomes hidden (switch/minimize/app switch)
-useEffect(() => {
-  const onVisibility = () => {
-    if (document.visibilityState === 'hidden') {
-      handleTabSwitchViolation();
-    }
-  };
-  document.addEventListener('visibilitychange', onVisibility);
-  return () => document.removeEventListener('visibilitychange', onVisibility);
-}, [handleTabSwitchViolation]);
+// End the attempt after exceeding allowed tab switches (Page Visibility API)
+
+
 // Block copy/cut/paste, context menu, drag/drop, and clipboard keystrokes within the assessment
 useEffect(() => {
 const prevent = (e) => {
@@ -1103,7 +1103,70 @@ const onKey = (e) => {
     setRunning(false);
   }
 };
+// NEW
+const tabSwitchKey = useMemo(() => {
+  if (!assessmentId || !user) return null;
+  return `tabSwitchCount_${assessmentId}_${user.uid}`;
+}, [assessmentId, user]); // NEW
+useEffect(() => {
+  try {
+    if (!tabSwitchKey) return;
+    const val = Number(localStorage.getItem(tabSwitchKey) || '0');
+    setTabSwitchCount(Number.isFinite(val) ? val : 0);
+  } catch {}
+}, [tabSwitchKey]); 
+const recordTabSwitchViolation = useCallback(async () => {
+  try {
+    // increment
+    const prev = tabSwitchCount || 0;
+    const next = prev + 1;
+    setTabSwitchCount(next);
+    if (tabSwitchKey) localStorage.setItem(tabSwitchKey, String(next));
 
+    // optional: log each violation (keeps your existing Firestore log behavior)
+    try {
+      if (user && assessmentId) {
+        await addDoc(collection(db, 'assessmentViolations'), {
+          userId: user.uid,
+          assessmentId,
+          type: 'tab_switch',
+          occurredAt: new Date(),
+          count: next
+        });
+      }
+    } catch {}
+
+    // Warn until limit reached; terminate only when next > TAB_SWITCH_LIMIT
+    if (next <= TAB_SWITCH_LIMIT) {
+      const left = TAB_SWITCH_LIMIT - next;
+      toast.error(
+        left > 0
+          ? `Tab switch detected (${next}/${TAB_SWITCH_LIMIT}). ${left} more chance${left === 1 ? '' : 's'} before termination.`
+          : `Tab switch detected (${next}/${TAB_SWITCH_LIMIT}). Next violation will end the assessment.`,
+        { duration: 4000 }
+      );
+      return;
+    }
+
+    // Exceeded limit -> terminate using existing flow
+    await handleTabSwitchViolation();
+  } catch {
+    // Fallback: still try to terminate to enforce policy
+    await handleTabSwitchViolation();
+  }
+}, [tabSwitchCount, tabSwitchKey, user, assessmentId, handleTabSwitchViolation, db]);
+
+useEffect(() => {
+  const onVisibility = () => {
+    // visible | hidden
+    if (document.visibilityState === 'hidden') {
+      // Only count when page actually goes hidden (tab switch/minimize/lock)
+      recordTabSwitchViolation();
+    }
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+  return () => document.removeEventListener('visibilitychange', onVisibility);
+}, [recordTabSwitchViolation]); // NEW
 // Update submission to persist marks instead of percent
   const computeQuestionMarks = useCallback((totalQuestions, totalTestCases, passedCount) => {
   const qMax = totalQuestions > 0 ? 100 / totalQuestions : 0;       // 100/N
