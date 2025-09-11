@@ -269,6 +269,11 @@ class CodeExecutionEngine {
     out = out.replace(/\bINT\s+PRIMARY\s+KEY\b/gi, 'INT AUTOINCREMENT PRIMARY KEY');
     return out;
   }
+  static normalizeQueryDates(sql) {
+    // before dbi.exec(sqlQuery)
+alasql.options.dateAsString = false;
+  return sql.replace(/\bMAX\s*\(\s*([A-Za-z_][\w]*)\s*\)/gi, 'MAX(DATE($1))');
+}
   static async executeSQL(sqlQuery, testCases) {
     const results = [];
     try {
@@ -289,6 +294,7 @@ class CodeExecutionEngine {
             const parts = normalized.split(';').map(s => s.trim()).filter(Boolean);
             for (const q of parts) dbi.exec(q);
           }
+          
           const queryResult = dbi.exec(sqlQuery);
           const ms = Date.now() - start;
           const actualOutput = (queryResult && queryResult.length > 0) ? JSON.stringify(queryResult) : '[]';
@@ -1683,14 +1689,7 @@ useEffect(() => {
                       <Play className="w-4 h-4 mr-2" />
                       {running ? 'Running...' : 'Run Code'}
                     </button>
-                    <button
-                      onClick={handleSubmitSolution}
-                      disabled={submitting || !testResults}
-                      className="flex items-center px-6 py-2 font-medium text-white transition-colors bg-blue-600 rounded-lg hover:bg-blue-700 disabled:bg-gray-600"
-                    >
-                      <Send className="w-4 h-4 mr-2" />
-                      {submitting ? 'Submitting...' : 'Submit Solution'}
-                    </button>
+                  
                   </div>
                   <div className="flex items-center space-x-2">
                     <button
